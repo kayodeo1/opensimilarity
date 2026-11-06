@@ -228,6 +228,9 @@ public class Store {
         return tx.execute(status -> {
             jdbc.getJdbcTemplate().execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'");
             jdbc.getJdbcTemplate().execute("SET LOCAL hnsw.ef_search = 100");
+            // The same statement runs once per chunk. A cached generic plan cannot see which collection is searched,
+            // so it may pick a filtered index scan where an exact scan of a small collection would be far cheaper.
+            jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
             List<List<NearestChunk>> results = new ArrayList<>(vectors.size());
             for (float[] vector : vectors) {
                 MapSqlParameterSource params = scope.params()

@@ -2,10 +2,11 @@ server:
   # No authentication yet (see README), so bind to loopback unless told otherwise.
   address: ${OPENSIM_BIND_ADDRESS:127.0.0.1}
   port: ${OPENSIM_PORT:8080}
-  error:
-    include-message: always
 
 spring:
+  web:
+    error:
+      include-message: always
   datasource:
     url: ${OPENSIM_DB_URL:jdbc:postgresql://localhost:5432/opensimilarity}
     username: ${OPENSIM_DB_USER:opensim}
