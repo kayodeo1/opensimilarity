@@ -1,0 +1,29 @@
+server:
+  # No authentication yet (see README), so bind to loopback unless told otherwise.
+  address: ${OPENSIM_BIND_ADDRESS:127.0.0.1}
+  port: ${OPENSIM_PORT:8080}
+  error:
+    include-message: always
+
+spring:
+  datasource:
+    url: ${OPENSIM_DB_URL:jdbc:postgresql://localhost:5432/opensimilarity}
+    username: ${OPENSIM_DB_USER:opensim}
+    # Deliberately no default: the password must come from the environment.
+    password: ${OPENSIM_DB_PASSWORD}
+    hikari:
+      connection-timeout: 5000
+      data-source-properties:
+        reWriteBatchedInserts: true
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 55MB
+  jackson:
+    mapper:
+      sort-properties-alphabetically: false
+
+opensim:
+  embedding:
+    # minilm = local all-MiniLM-L6-v2 (quantized, bundled in the jar); none = fingerprint only.
+    provider: ${OPENSIM_EMBEDDING_PROVIDER:minilm}

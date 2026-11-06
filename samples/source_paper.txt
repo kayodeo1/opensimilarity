@@ -1,0 +1,28 @@
+Rainwater Harvesting as a Supplement to Borehole Supply in University Hostels
+
+Abstract
+
+This synthetic paper examines whether rooftop rainwater harvesting can reduce pressure on borehole supply in the student hostels of a mid-sized Nigerian university. All data described here are invented for demonstration purposes.
+
+Introduction
+
+University hostels in southern Nigeria often depend on a small number of boreholes whose pumps run on an unreliable electricity supply. When the pumps stop, students carry water by hand from distant points, and sanitation in shared bathrooms declines within hours.
+
+Water Demand and Storage
+
+A hostel block housing four hundred students consumed about thirty thousand litres on a typical weekday during the survey period, with the sharpest peak between six and eight in the morning. Because this peak coincides with the hours when grid power is least dependable, storage capacity matters more than pumping capacity, and modest overhead tanks filled during the night were able to carry an entire block through the morning without any generator running at all.
+
+Rooftop Catchment Results
+
+The roofing sheets on older blocks are badly corroded, which raises the iron content of collected water and makes it unsuitable for drinking without treatment. Nevertheless, first-flush diverters removed most of the sediment from each downpour, and the harvested water proved acceptable for flushing toilets, washing clothes and cleaning floors, which together account for more than half of daily hostel consumption.
+
+Conclusion
+
+Rainwater harvesting cannot replace boreholes during the dry season, but it can shift non-potable demand away from them for roughly seven months of the year. Institutions should budget for gutters and tanks when hostels are built, since retrofitting costs considerably more.
+
+References
+
+Adeyemi, T. and Bello, S. (2019). Groundwater reliability on Nigerian university campuses. Journal of Campus Infrastructure, 12(3), 44-59.
+Okafor, C. N. (2021). Household rainwater quality under corroded roofing sheets. West African Journal of Environmental Health, 8(1), 101-118.
+Musa, H., Eze, P. and Danjuma, L. (2022). Power reliability and water pumping in tertiary institutions. Energy and Society in Africa, 5(2), 210-227.
+Nwosu, A. (2020). Designing first-flush diverters for tropical downpours. Applied Water Engineering, 17(4), 330-342.

@@ -1,0 +1,6 @@
+target/
+.git/
+.env
+research/
+research_notes/
+design/

@@ -1,0 +1,7 @@
+Managing Water in Student Accommodation
+
+This essay considers what a hostel administrator can actually change about water supply, as opposed to what must wait for capital funding. My own experience of living in a hostel for three years shapes much of the discussion.
+
+Most complaints reach the hall warden first thing in the morning, when everybody is getting ready for lectures at the same moment. A hostel block housing four hundred students consumed about thirty thousand litres on a typical weekday during the survey period, with the sharpest peak between six and eight in the morning. Because this peak coincides with the hours when grid power is least dependable, storage capacity matters more than pumping capacity, and modest overhead tanks filled during the night were able to carry an entire block through the morning without any generator running at all.
+
+From that observation I draw a practical recommendation. Wardens should schedule tank filling for the small hours and publish the timetable on the notice board, so that residents know when shortages are likely and can plan their laundry accordingly. Student representatives could help to report leaking taps, since a single dripping fixture wastes a surprising amount of water across a semester.

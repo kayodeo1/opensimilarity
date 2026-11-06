@@ -1,0 +1,14 @@
+Why Generators Should Not Be the First Answer
+
+Many halls of residence respond to every interruption in supply by buying another generator. This essay questions that habit and asks whether the money would do more good if it were spent on maintenance instead.
+
+Fuel is expensive and deliveries are irregular, so a generator that sits idle for want of diesel offers no protection at all. A poorly serviced pump also wastes whatever electricity it receives. I visited two halls last semester and found that the one with the older equipment, carefully maintained, had fewer outages than the one with new machines and no servicing plan.
+
+Maintenance budgets are easy to cut because the consequences arrive slowly. Governing councils ought to ring-fence them, and to ask for a yearly report on how many hours each hall went without water.
+
+References
+
+Adeyemi, T. and Bello, S. (2019). Groundwater reliability on Nigerian university campuses. Journal of Campus Infrastructure, 12(3), 44-59.
+Okafor, C. N. (2021). Household rainwater quality under corroded roofing sheets. West African Journal of Environmental Health, 8(1), 101-118.
+Musa, H., Eze, P. and Danjuma, L. (2022). Power reliability and water pumping in tertiary institutions. Energy and Society in Africa, 5(2), 210-227.
+Nwosu, A. (2020). Designing first-flush diverters for tropical downpours. Applied Water Engineering, 17(4), 330-342.
