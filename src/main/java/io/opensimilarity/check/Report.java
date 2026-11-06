@@ -60,7 +60,7 @@ public record Report(
 
     /**
      * @param method FINGERPRINT (words are exactly shared) or EMBEDDING (similar meaning, for human review)
-     * @param matchedWords words that count towards the percentages
+     * @param matchedWords words that count towards the percentages; for an excluded match, the exact words it held
      * @param confidence 1.0 for an exact fingerprint match; cosine similarity for an embedding match
      * @param excludedBecause null for reported matches; otherwise the filter that removed the match
      */

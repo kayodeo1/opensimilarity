@@ -1,6 +1,11 @@
 target/
-.env
-*.log
 .idea/
-.vscode/
 *.iml
+.classpath
+.project
+.settings/
+.DS_Store
+*.log
+.env
+.claude/
+research_notes/

@@ -16,7 +16,7 @@ class ChunkerTest {
 
     @Test
     void coversEveryWordWithOverlappingChunks() {
-        String text = sentence(12).repeat(30);
+        String text = sentence(12).repeat(30).strip();
         Tokens tokens = Tokenizer.tokenize(text);
         List<Chunk> chunks = Chunker.chunk(text, tokens);
         assertThat(chunks).hasSizeGreaterThan(1);
@@ -26,6 +26,26 @@ class ChunkerTest {
             assertThat(chunks.get(i).wordStart()).isLessThan(chunks.get(i - 1).wordEnd());
             assertThat(chunks.get(i).wordStart()).isGreaterThan(chunks.get(i - 1).wordStart());
         }
+    }
+
+    @Test
+    void passagesDoNotCrossHeadingsOrParagraphBreaks() {
+        String firstParagraph = sentence(20) + sentence(20);
+        String secondParagraph = sentence(20) + sentence(20);
+        String text = "A Title Line\n\n" + firstParagraph + "\n\nResults\n" + secondParagraph;
+        List<Chunk> chunks = Chunker.chunk(text, Tokenizer.tokenize(text));
+        assertThat(chunks).hasSize(2);
+        assertThat(chunks).allSatisfy(c -> assertThat(c.text(text)).doesNotContain("Title").doesNotContain("Results"));
+    }
+
+    @Test
+    void wrappedLinesOfANarrowColumnAreNotMistakenForHeadings() {
+        String text = "Narrow columns wrap their text after only a few\n"
+                + "words on every line of the page so that\n"
+                + "no single line looks like a complete sentence\n"
+                + "and yet together the lines still form one\n"
+                + "ordinary paragraph that deserves to be embedded.";
+        assertThat(Chunker.chunk(text, Tokenizer.tokenize(text))).hasSize(1);
     }
 
     @Test

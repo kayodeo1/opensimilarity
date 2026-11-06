@@ -104,7 +104,8 @@ public class CheckService {
             for (Aligner.Match aligned : Aligner.align(tokens.words(), sourceTokens.words())) {
                 int counted = masks.countUnmasked(aligned);
                 String reason = exclusionReason(aligned, masks, sourceBibliography, counted, params);
-                Match match = new Match("FINGERPRINT", sourceId, titles.get(sourceId), counted, 1.0,
+                int reportedWords = reason == null ? counted : exactWords(aligned);
+                Match match = new Match("FINGERPRINT", sourceId, titles.get(sourceId), reportedWords, 1.0,
                         span(text, tokens, aligned.queryStart(), aligned.queryEnd()),
                         span(sourceText, sourceTokens, aligned.sourceStart(), aligned.sourceEnd()), reason);
                 if (reason != null) {
@@ -231,6 +232,10 @@ public class CheckService {
             }
         }
         return end > start ? (double) masked / (end - start) : 0.0;
+    }
+
+    private static int exactWords(Aligner.Match match) {
+        return match.runs().stream().mapToInt(run -> run.queryEnd() - run.queryStart()).sum();
     }
 
     private static String exclusionReason(Aligner.Match aligned, Masks masks, boolean[] sourceBibliography,
