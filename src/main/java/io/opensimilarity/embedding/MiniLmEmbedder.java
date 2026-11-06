@@ -2,21 +2,21 @@ package io.opensimilarity.embedding;
 
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.embedding.onnx.allminilml6v2q.AllMiniLmL6V2QuantizedEmbeddingModel;
+import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-/** all-MiniLM-L6-v2 (Apache-2.0), quantized, running in-process on ONNX Runtime. Mainly English. */
+/** all-MiniLM-L6-v2 (Apache-2.0), running in-process on ONNX Runtime. Mainly English. */
 @Component
 @ConditionalOnProperty(name = "opensim.embedding.provider", havingValue = "minilm", matchIfMissing = true)
 public class MiniLmEmbedder implements Embedder {
 
-    private final AllMiniLmL6V2QuantizedEmbeddingModel model = new AllMiniLmL6V2QuantizedEmbeddingModel();
+    private final AllMiniLmL6V2EmbeddingModel model = new AllMiniLmL6V2EmbeddingModel();
 
     @Override
     public String modelId() {
-        return "all-MiniLM-L6-v2-q";
+        return "all-MiniLM-L6-v2";
     }
 
     @Override

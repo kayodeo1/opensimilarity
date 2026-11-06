@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenSimilarity</title>
+<style>
+  :root { --ink:#1f2933; --muted:#616e7c; --line:#d9e2ec; --bg:#f5f7fa; --accent:#0b6e4f; --exact:#ffe08a; --lead:#b5e0f7; --gone:#e4e7eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+  header { padding:14px 24px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns:330px minmax(0,1fr); gap:16px; padding:16px 24px; align-items:start; }
+  @media (max-width:860px) { main { grid-template-columns:1fr; } }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; }
+  h2 { margin:0 0 10px; font-size:14px; }
+  label { display:block; margin:8px 0 2px; font-size:13px; color:var(--muted); }
+  label.inline { display:flex; gap:6px; align-items:flex-start; color:var(--ink); }
+  input[type=text],input[type=number],select { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:5px; font:inherit; }
+  button { margin-top:10px; padding:6px 12px; border:1px solid var(--accent); border-radius:5px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.quiet { background:#fff; color:var(--accent); margin:0; padding:2px 8px; font-size:13px; }
+  ul.plain { list-style:none; margin:8px 0 0; padding:0; }
+  ul.plain li { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; }
+  .muted { color:var(--muted); font-size:13px; }
+  .error { color:#a61b1b; font-size:13px; margin-top:8px; }
+  .notice { padding:8px 12px; background:#eef6f2; border-left:3px solid var(--accent); font-size:13px; margin-bottom:12px; }
+  .figures { display:flex; flex-wrap:wrap; gap:24px; margin-bottom:12px; }
+  .figures b { display:block; font-size:22px; line-height:1.2; }
+  .text { white-space:pre-wrap; overflow-wrap:anywhere; font:14px/1.6 Georgia,serif; max-height:560px; overflow:auto; padding:12px; border:1px solid var(--line); border-radius:6px; }
+  mark.FINGERPRINT { background:var(--exact); } mark.EMBEDDING { background:var(--lead); }
+  mark.active { outline:2px solid var(--ink); }
+  .match { border-top:1px solid var(--line); padding:10px 0; cursor:pointer; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:12px; margin-right:6px; }
+  .tag.FINGERPRINT { background:var(--exact); } .tag.EMBEDDING { background:var(--lead); } .tag.excluded { background:var(--gone); }
+  blockquote { margin:6px 0 0; padding-left:10px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenSimilarity</h1>
+  <p>Finds overlapping text for a person to review. It does not decide whether anything is plagiarism.</p>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Collection</h2>
+      <select id="collection" aria-label="Current collection"></select>
+      <form id="new-collection">
+        <label for="c-name">New collection name</label>
+        <input id="c-name" type="text" required>
+        <label for="c-dept">Department (optional)</label>
+        <input id="c-dept" type="text">
+        <label for="c-policy">Index policy</label>
+        <select id="c-policy">
+          <option value="COURSE_ONLY">Course only</option>
+          <option value="DEPT_ONLY">Department only</option>
+          <option value="NEVER_INDEX">Never index</option>
+        </select>
+        <label for="c-days">Retention in days (optional)</label>
+        <input id="c-days" type="number" min="1">
+        <button>Create collection</button>
+      </form>
+    </section>
+    <section>
+      <h2>Upload a document</h2>
+      <form id="upload">
+        <input id="file" type="file" accept=".pdf,.docx,.txt" required aria-label="PDF, DOCX or TXT file">
+        <label class="inline"><input id="consent" type="checkbox"> The author agrees this document may be matched against others in this collection's scope.</label>
+        <button>Upload</button>
+      </form>
+      <div id="upload-error" class="error" role="alert"></div>
+    </section>
+    <section>
+      <h2>Documents</h2>
+      <label class="inline"><input id="use-embeddings" type="checkbox" checked> Include paraphrase leads</label>
+      <label class="inline"><input id="ex-bib" type="checkbox" checked> Exclude bibliography</label>
+      <label class="inline"><input id="ex-quotes" type="checkbox" checked> Exclude quotations</label>
+      <label for="min-words">Smallest match, in words</label>
+      <input id="min-words" type="number" min="5" value="12">
+      <ul id="documents" class="plain"></ul>
+      <div id="check-error" class="error" role="alert"></div>
+    </section>
+  </div>
+  <div>
+    <section id="report"><p class="muted">Upload documents, then run a check to see the report here.</p></section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || body.detail || `Request failed (${res.status})`);
+  }
+  return res;
+}
+
+async function loadCollections(selectId) {
+  const list = await (await api('/api/collections')).json();
+  const select = $('collection');
+  select.replaceChildren(...list.map(c => { const o = el('option', '', c.name); o.value = c.id; return o; }));
+  if (selectId) select.value = selectId;
+  await loadDocuments();
+}
+
+async function loadDocuments() {
+  const id = $('collection').value;
+  const list = $('documents');
+  list.replaceChildren();
+  if (!id) return;
+  const docs = await (await api(`/api/collections/${id}/documents`)).json();
+  for (const d of docs) {
+    const li = el('li');
+    const label = el('span', '', d.title);
+    label.append(el('div', 'muted', `${d.wordCount} words · ${d.indexPolicy === 'NEVER_INDEX' ? 'not indexed' : d.indexPolicy}`));
+    const run = el('button', 'quiet', 'Check');
+    run.onclick = () => runCheck(d.id);
+    li.append(label, run);
+    list.append(li);
+  }
+  if (!docs.length) list.append(el('li', 'muted', 'No documents yet.'));
+}
+
+async function runCheck(id) {
+  $('check-error').textContent = '';
+  try {
+    const body = {
+      useEmbeddings: $('use-embeddings').checked,
+      excludeBibliography: $('ex-bib').checked,
+      excludeQuotes: $('ex-quotes').checked,
+      minMatchWords: Number($('min-words').value),
+    };
+    const report = await (await api(`/api/documents/${id}/checks`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    })).json();
+    const text = await (await api(`/api/documents/${id}/text`)).text();
+    render(report, text);
+  } catch (e) {
+    $('check-error').textContent = e.message;
+  }
+}
+
+/** Splits the text at every match boundary so overlapping matches still highlight correctly. */
+function highlighted(text, matches) {
+  const cuts = new Set([0, text.length]);
+  matches.forEach(m => { cuts.add(m.query.charStart); cuts.add(m.query.charEnd); });
+  const points = [...cuts].sort((a, b) => a - b);
+  const out = el('div', 'text');
+  for (let i = 0; i + 1 < points.length; i++) {
+    const [from, to] = [points[i], points[i + 1]];
+    const covering = matches.filter(m => m.query.charStart <= from && m.query.charEnd >= to);
+    const piece = text.slice(from, to);
+    if (!covering.length) { out.append(piece); continue; }
+    const exact = covering.find(m => m.method === 'FINGERPRINT');
+    const mark = el('mark', (exact || covering[0]).method, piece);
+    mark.dataset.matches = covering.map(m => matches.indexOf(m)).join(' ');
+    out.append(mark);
+  }
+  return out;
+}
+
+function matchEntry(m, index, viewer) {
+  const row = el('div', 'match');
+  row.append(el('span', `tag ${m.excludedBecause ? 'excluded' : m.method}`, m.excludedBecause ? `excluded: ${m.excludedBecause}` : m.method));
+  const detail = m.method === 'EMBEDDING' ? `cosine ${m.confidence}` : 'exact words';
+  row.append(`${m.matchedWords} words · ${detail} · source: ${m.sourceTitle} (characters ${m.source.charStart}–${m.source.charEnd})`);
+  row.append(el('blockquote', '', m.source.text.length > 400 ? m.source.text.slice(0, 400) + '…' : m.source.text));
+  if (index !== null) {
+    row.onclick = () => {
+      viewer.querySelectorAll('mark.active').forEach(n => n.classList.remove('active'));
+      const marks = [...viewer.querySelectorAll('mark')].filter(n => n.dataset.matches.split(' ').includes(String(index)));
+      marks.forEach(n => n.classList.add('active'));
+      if (marks[0]) marks[0].scrollIntoView({block: 'center', behavior: 'smooth'});
+    };
+  }
+  return row;
+}
+
+function render(r, text) {
+  const out = $('report');
+  out.replaceChildren(el('h2', '', r.documentTitle), el('div', 'notice', r.notice));
+  const figures = el('div', 'figures');
+  const figure = (value, label) => { const d = el('div', 'muted'); d.append(el('b', '', value), label); figures.append(d); };
+  figure(`${r.summary.overlapPercent}%`, 'exact overlap');
+  figure(`${r.summary.paraphraseLeadPercent}%`, 'paraphrase leads');
+  figure(r.sources.length, 'exact sources');
+  figure(r.corpus.eligibleDocuments, 'documents searched');
+  out.append(figures);
+  out.append(el('p', 'muted', `${r.summary.matchedWords} of ${r.summary.consideredWords} words considered. `
+    + `Left out: ${r.summary.excludedBibliographyWords} bibliography, ${r.summary.excludedQuotedWords} quoted. `
+    + `Embeddings: ${r.embedding.status}${r.embedding.model ? ' (' + r.embedding.model + ')' : ''}.`));
+  const viewer = highlighted(text, r.matches);
+  out.append(viewer);
+  out.append(el('h2', '', `Matches (${r.matches.length})`));
+  if (!r.matches.length) out.append(el('p', 'muted', 'No matches above the current settings.'));
+  r.matches.forEach((m, i) => out.append(matchEntry(m, i, viewer)));
+  if (r.excludedMatchesTotal) {
+    const details = el('details');
+    details.append(el('summary', 'muted', `Filtered out (${r.excludedMatchesTotal})`));
+    r.excludedMatches.forEach(m => details.append(matchEntry(m, null, viewer)));
+    out.append(details);
+  }
+  out.scrollIntoView({behavior: 'smooth'});
+}
+
+$('collection').onchange = loadDocuments;
+
+$('new-collection').onsubmit = async e => {
+  e.preventDefault();
+  $('upload-error').textContent = '';
+  try {
+    const body = {
+      name: $('c-name').value,
+      department: $('c-dept').value || null,
+      indexPolicy: $('c-policy').value,
+      retentionDays: $('c-days').value ? Number($('c-days').value) : null,
+    };
+    const created = await (await api('/api/collections', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    })).json();
+    e.target.reset();
+    await loadCollections(created.id);
+  } catch (err) {
+    $('upload-error').textContent = err.message;
+  }
+};
+
+$('upload').onsubmit = async e => {
+  e.preventDefault();
+  $('upload-error').textContent = '';
+  if (!$('collection').value) { $('upload-error').textContent = 'Create a collection first.'; return; }
+  const form = new FormData();
+  form.append('file', $('file').files[0]);
+  form.append('consentToIndex', $('consent').checked);
+  try {
+    await api(`/api/collections/${$('collection').value}/documents`, {method: 'POST', body: form});
+    e.target.reset();
+    await loadDocuments();
+  } catch (err) {
+    $('upload-error').textContent = err.message;
+  }
+};
+
+loadCollections().catch(e => { $('upload-error').textContent = e.message; });
+</script>
+</body>
+</html>

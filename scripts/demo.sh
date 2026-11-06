@@ -45,14 +45,15 @@ SOURCE=$(upload source_paper.pdf)
 VERBATIM=$(upload student_verbatim.txt)
 VERBATIM_PDF=$(upload student_verbatim.pdf false)
 VERBATIM_DOCX=$(upload student_verbatim.docx false)
-PARAPHRASE=$(upload student_paraphrase.txt)
+PARAPHRASE=$(upload student_paraphrase_light.txt)
+HEAVY=$(upload student_paraphrase_heavy.txt)
 BIBLIOGRAPHY=$(upload student_bibliography_only.txt)
 QUOTED=$(upload student_quoted.txt)
 SAME_TOPIC=$(upload control_same_topic.txt)
 UNRELATED=$(upload control_unrelated.txt)
 
 PLANTED='A hostel block housing four hundred students'
-PLANTED_END='without any generator running at all.'
+PLANTED_END='without any generator running at all'
 
 echo "== 1. Verbatim paragraph: student_verbatim.txt vs source_paper.pdf"
 report=$(check "$VERBATIM")
@@ -96,7 +97,7 @@ report_off=$(check "$QUOTED" '{"excludeQuotes":false}')
 summarize "$report_on"
 expect "filter on: quotation not counted" '.summary.overlapPercent == 0' "$report_on"
 expect "filter on: the removed overlap stays visible, with its reason" \
-    '[.excludedMatches[] | select(.excludedBecause == "QUOTED")] | length == 1' "$report_on"
+    "[.excludedMatches[] | select(.excludedBecause == \"QUOTED\" and .sourceDocumentId == \"$SOURCE\" and .matchedWords > 20)] | length == 1" "$report_on"
 expect "filter off: quotation counted" '.summary.overlapPercent > 10' "$report_off"
 
 echo "== 4. Synonym rewrite: fingerprints miss it, embeddings suggest it"
@@ -106,9 +107,17 @@ expect "no exact overlap" '.summary.overlapPercent == 0' "$report"
 expect "EMBEDDING match from the source paper" \
     "[.matches[] | select(.method == \"EMBEDDING\" and .sourceDocumentId == \"$SOURCE\")] | length >= 1" "$report"
 expect "it points at the rewritten paragraph" \
-    "[.matches[] | select(.method == \"EMBEDDING\" and .sourceDocumentId == \"$SOURCE\")][0] | (.query.text | contains(\"severely rusted\")) and (.source.text | contains(\"badly corroded\"))" "$report"
+    "[.matches[] | select(.method == \"EMBEDDING\" and .sourceDocumentId == \"$SOURCE\")][0] | (.query.text | contains(\"heavily rusted\")) and (.source.text | contains(\"badly corroded\"))" "$report"
 report_fp=$(check "$PARAPHRASE" '{"useEmbeddings":false}')
 expect "with embeddings off nothing is reported" '(.matches | length) == 0 and .embedding.status == "NOT_REQUESTED"' "$report_fp"
+
+echo "== 4b. Known limitation: a heavily restructured paraphrase is below the default threshold"
+report=$(check "$HEAVY")
+expect "not flagged against the source at the default threshold" \
+    "[.matches[] | select(.sourceDocumentId == \"$SOURCE\")] | length == 0" "$report"
+report=$(check "$HEAVY" '{"minCosine":0.6}')
+expect "visible if the reviewer lowers minCosine to 0.6" \
+    "[.matches[] | select(.method == \"EMBEDDING\" and .sourceDocumentId == \"$SOURCE\")] | length >= 1" "$report"
 
 echo "== 5. Controls: no false alarms"
 report=$(check "$SAME_TOPIC")

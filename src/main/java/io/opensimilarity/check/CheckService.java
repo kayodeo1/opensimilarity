@@ -43,7 +43,11 @@ import tools.jackson.databind.json.JsonMapper;
 public class CheckService {
 
     static final int DEFAULT_MIN_MATCH_WORDS = 12;
-    static final double DEFAULT_MIN_COSINE = 0.80;
+    /**
+     * Sits between clean synonym rewrites (0.79 to 0.86) and original writing on the same topic (up to 0.66) in the
+     * small synthetic set under samples/. Heavily restructured paraphrases score 0.63 to 0.67 and are missed.
+     */
+    static final double DEFAULT_MIN_COSINE = 0.72;
     static final double MINHASH_THRESHOLD = 0.02;
     static final int MAX_ALIGNED_DOCUMENTS = 50;
     static final int MAX_EXCLUDED_IN_REPORT = 100;

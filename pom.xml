@@ -76,10 +76,13 @@
       <artifactId>tika-parser-text-module</artifactId>
     </dependency>
 
-    <!-- Local ONNX sentence embeddings; the quantized model ships inside this jar. -->
+    <!--
+      Local ONNX sentence embeddings; the model ships inside this jar. Not the smaller "-q" artifact: on an AVX-VNNI
+      Xeon the quantized model returned different vectors for the same text (see MiniLmEmbedderTest).
+    -->
     <dependency>
       <groupId>dev.langchain4j</groupId>
-      <artifactId>langchain4j-embeddings-all-minilm-l6-v2-q</artifactId>
+      <artifactId>langchain4j-embeddings-all-minilm-l6-v2</artifactId>
       <version>${langchain4j.embeddings.version}</version>
     </dependency>
 

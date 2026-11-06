@@ -25,5 +25,5 @@ spring:
 
 opensim:
   embedding:
-    # minilm = local all-MiniLM-L6-v2 (quantized, bundled in the jar); none = fingerprint only.
+    # minilm = local all-MiniLM-L6-v2 (bundled in the jar); none = fingerprint only.
     provider: ${OPENSIM_EMBEDDING_PROVIDER:minilm}

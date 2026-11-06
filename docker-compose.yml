@@ -1,0 +1,32 @@
+# Starts a fresh database and the app. Needs OPENSIM_DB_PASSWORD (see .env.example).
+services:
+  db:
+    # PostgreSQL 16 is the version this project has been run against.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: opensim
+      POSTGRES_DB: opensimilarity
+      POSTGRES_PASSWORD: ${OPENSIM_DB_PASSWORD:?Set OPENSIM_DB_PASSWORD; see .env.example}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opensim -d opensimilarity"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    environment:
+      OPENSIM_DB_URL: jdbc:postgresql://db:5432/opensimilarity
+      OPENSIM_DB_USER: opensim
+      OPENSIM_DB_PASSWORD: ${OPENSIM_DB_PASSWORD:?Set OPENSIM_DB_PASSWORD; see .env.example}
+    ports:
+      # Loopback only, because the API has no authentication yet.
+      - "127.0.0.1:${OPENSIM_APP_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
