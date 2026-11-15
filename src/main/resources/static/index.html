@@ -33,6 +33,18 @@
   .match { border-top:1px solid var(--line); padding:10px 0; cursor:pointer; }
   .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:12px; margin-right:6px; }
   .tag.FINGERPRINT { background:var(--exact); } .tag.EMBEDDING { background:var(--lead); } .tag.excluded { background:var(--gone); }
+  .groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:12px; }
+  .group { border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-size:13px; }
+  .group b { display:block; font-size:16px; }
+  .group.NOT_CITED_OR_QUOTED { border-left:4px solid #c2410c; } .group.MISSING_QUOTATIONS { border-left:4px solid #b45309; }
+  .group.MISSING_CITATION { border-left:4px solid #7c3aed; } .group.CITED_AND_QUOTED { border-left:4px solid #15803d; }
+  .flags { padding:8px 12px; background:#fff4e5; border-left:3px solid #b45309; font-size:13px; margin-bottom:12px; }
+  .flags ul { margin:4px 0 0; padding-left:18px; }
+  ol.sources { margin:0 0 12px; padding-left:22px; font-size:13px; }
+  ol.sources li { padding:3px 0; }
+  ol.sources li.off { color:var(--muted); text-decoration:line-through; }
+  ol.sources button { margin-left:8px; }
+  mark.replaced { background:#fecaca; outline:1px solid #b91c1c; }
   blockquote { margin:6px 0 0; padding-left:10px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
 </style>
 </head>
@@ -63,6 +75,15 @@
       </form>
     </section>
     <section>
+      <h2>Assignment template</h2>
+      <p class="muted" id="template-status">No template for this collection.</p>
+      <form id="template">
+        <input id="template-file" type="file" accept=".pdf,.docx,.txt" required aria-label="Template file">
+        <button>Set template</button>
+      </form>
+      <p class="muted">Instructions or question text every student reuses. Matches on it are excluded.</p>
+    </section>
+    <section>
       <h2>Upload a document</h2>
       <form id="upload">
         <input id="file" type="file" accept=".pdf,.docx,.txt" required aria-label="PDF, DOCX or TXT file">
@@ -76,8 +97,12 @@
       <label class="inline"><input id="use-embeddings" type="checkbox" checked> Include paraphrase leads</label>
       <label class="inline"><input id="ex-bib" type="checkbox" checked> Exclude bibliography</label>
       <label class="inline"><input id="ex-quotes" type="checkbox" checked> Exclude quotations</label>
+      <label class="inline"><input id="ex-cited" type="checkbox"> Exclude cited text</label>
+      <label class="inline"><input id="ex-template" type="checkbox" checked> Exclude assignment template</label>
       <label for="min-words">Smallest match, in words</label>
       <input id="min-words" type="number" min="5" value="12">
+      <label for="min-source">Exclude sources under this % of the paper</label>
+      <input id="min-source" type="number" min="0" max="99" step="0.5" value="0">
       <ul id="documents" class="plain"></ul>
       <div id="check-error" class="error" role="alert"></div>
     </section>
@@ -107,7 +132,32 @@ async function loadCollections(selectId) {
   await loadDocuments();
 }
 
+const GROUP_LABELS = {
+  NOT_CITED_OR_QUOTED: 'Not cited or quoted',
+  MISSING_QUOTATIONS: 'Missing quotations',
+  MISSING_CITATION: 'Missing citation',
+  CITED_AND_QUOTED: 'Cited and quoted',
+};
+let excludedSources = new Set();
+let lastChecked = null;
+
+async function loadTemplate() {
+  const id = $('collection').value;
+  const status = $('template-status');
+  status.textContent = 'No template for this collection.';
+  if (!id) return;
+  const res = await fetch(`/api/collections/${id}/template`);
+  if (res.ok) {
+    const t = await res.json();
+    status.textContent = `Template: ${t.title} (${t.wordCount} words). `;
+    const remove = el('button', 'quiet', 'Remove');
+    remove.onclick = async () => { await api(`/api/collections/${id}/template`, {method: 'DELETE'}); loadTemplate(); };
+    status.append(remove);
+  }
+}
+
 async function loadDocuments() {
+  loadTemplate().catch(() => {});
   const id = $('collection').value;
   const list = $('documents');
   list.replaceChildren();
@@ -118,7 +168,7 @@ async function loadDocuments() {
     const label = el('span', '', d.title);
     label.append(el('div', 'muted', `${d.wordCount} words · ${d.indexPolicy === 'NEVER_INDEX' ? 'not indexed' : d.indexPolicy}`));
     const run = el('button', 'quiet', 'Check');
-    run.onclick = () => runCheck(d.id);
+    run.onclick = () => { excludedSources = new Set(); runCheck(d.id); };
     li.append(label, run);
     list.append(li);
   }
@@ -127,12 +177,17 @@ async function loadDocuments() {
 
 async function runCheck(id) {
   $('check-error').textContent = '';
+  lastChecked = id;
   try {
     const body = {
       useEmbeddings: $('use-embeddings').checked,
       excludeBibliography: $('ex-bib').checked,
       excludeQuotes: $('ex-quotes').checked,
+      excludeCited: $('ex-cited').checked,
+      excludeTemplate: $('ex-template').checked,
       minMatchWords: Number($('min-words').value),
+      minSourcePercent: Number($('min-source').value) || 0,
+      excludeSourceIds: [...excludedSources],
     };
     const report = await (await api(`/api/documents/${id}/checks`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
@@ -145,15 +200,24 @@ async function runCheck(id) {
 }
 
 /** Splits the text at every match boundary so overlapping matches still highlight correctly. */
-function highlighted(text, matches) {
+function highlighted(text, matches, replaced) {
   const cuts = new Set([0, text.length]);
   matches.forEach(m => { cuts.add(m.query.charStart); cuts.add(m.query.charEnd); });
+  const swapped = new Set(replaced || []);
+  swapped.forEach(o => { cuts.add(o); cuts.add(o + 1); });
   const points = [...cuts].sort((a, b) => a - b);
   const out = el('div', 'text');
   for (let i = 0; i + 1 < points.length; i++) {
     const [from, to] = [points[i], points[i + 1]];
     const covering = matches.filter(m => m.query.charStart <= from && m.query.charEnd >= to);
     const piece = text.slice(from, to);
+    if (swapped.has(from) && to === from + 1) {
+      const m = el('mark', 'replaced', piece);
+      m.title = `Replaced character U+${piece.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
+      m.dataset.matches = covering.map(c => matches.indexOf(c)).join(' ');
+      out.append(m);
+      continue;
+    }
     if (!covering.length) { out.append(piece); continue; }
     const exact = covering.find(m => m.method === 'FINGERPRINT');
     const mark = el('mark', (exact || covering[0]).method, piece);
@@ -166,8 +230,11 @@ function highlighted(text, matches) {
 function matchEntry(m, index, viewer) {
   const row = el('div', 'match');
   row.append(el('span', `tag ${m.excludedBecause ? 'excluded' : m.method}`, m.excludedBecause ? `excluded: ${m.excludedBecause}` : m.method));
+  row.append(el('span', 'tag excluded', GROUP_LABELS[m.matchGroup] || m.matchGroup));
   const detail = m.method === 'EMBEDDING' ? `cosine ${m.confidence}` : 'exact words';
-  row.append(`${m.matchedWords} words · ${detail} · source: ${m.sourceTitle} (characters ${m.source.charStart}–${m.source.charEnd})`);
+  const rank = m.sourceRank ? `[${m.sourceRank}] ` : '';
+  row.append(`${m.matchedWords} words · ${detail} · source: ${rank}${m.sourceTitle} (characters ${m.source.charStart}–${m.source.charEnd})`);
+  if (m.citation) row.append(el('div', 'muted', `Citation found: ${m.citation}`));
   row.append(el('blockquote', '', m.source.text.length > 400 ? m.source.text.slice(0, 400) + '…' : m.source.text));
   if (index !== null) {
     row.onclick = () => {
@@ -186,14 +253,63 @@ function render(r, text) {
   const figures = el('div', 'figures');
   const figure = (value, label) => { const d = el('div', 'muted'); d.append(el('b', '', value), label); figures.append(d); };
   figure(`${r.summary.overlapPercent}%`, 'exact overlap');
+  figure(`${r.summary.overlapPercentOfAllWords}%`, 'of all words');
   figure(`${r.summary.paraphraseLeadPercent}%`, 'paraphrase leads');
   figure(r.sources.length, 'exact sources');
   figure(r.corpus.eligibleDocuments, 'documents searched');
   out.append(figures);
   out.append(el('p', 'muted', `${r.summary.matchedWords} of ${r.summary.consideredWords} words considered. `
-    + `Left out: ${r.summary.excludedBibliographyWords} bibliography, ${r.summary.excludedQuotedWords} quoted. `
+    + `Left out: ${r.summary.excludedBibliographyWords} bibliography, ${r.summary.excludedQuotedWords} quoted, `
+    + `${r.summary.excludedTemplateWords} template. ${r.filters.citationsDetected} in-text citations found. `
     + `Embeddings: ${r.embedding.status}${r.embedding.model ? ' (' + r.embedding.model + ')' : ''}.`));
-  const viewer = highlighted(text, r.matches);
+
+  const groups = el('div', 'groups');
+  // Stored reports come back from jsonb with keys reordered, so render in a fixed order.
+  Object.keys(GROUP_LABELS).filter(key => r.matchGroups[key]).forEach(key => {
+    const g = r.matchGroups[key];
+    const box = el('div', `group ${key}`);
+    box.append(el('b', '', `${g.percent}%`), `${GROUP_LABELS[key]} · ${g.matches} match${g.matches === 1 ? '' : 'es'}`);
+    groups.append(box);
+  });
+  out.append(groups);
+
+  const f = r.flags;
+  const flagItems = [];
+  if (f.replacedCharacters) flagItems.push(`${f.replacedCharacters} replaced characters (letters from another alphabet that look like Latin letters; marked in red below)`);
+  if (f.invisibleCharacters) flagItems.push(`${f.invisibleCharacters} invisible characters inside words`);
+  if (f.hiddenTextWords) flagItems.push(`${f.hiddenTextWords} words of hidden text, e.g. “${f.hiddenTextSample.slice(0, 120)}”`);
+  if (flagItems.length) {
+    const box = el('div', 'flags');
+    box.append(el('b', '', 'Integrity flags: a reason to look closer, not proof of intent'));
+    const list = el('ul');
+    flagItems.forEach(t => list.append(el('li', '', t)));
+    box.append(list);
+    out.append(box);
+  } else if (f.hiddenTextStatus === 'NOT_RECORDED') {
+    out.append(el('p', 'muted', 'Hidden-text check not recorded for this document (uploaded before it existed).'));
+  }
+
+  const docId = r.documentId;
+  const sourceRows = [...r.sources.map(s => ({id: s.documentId, title: s.title, rank: s.rank, pct: s.percentOfConsidered}))];
+  excludedSources.forEach(id => {
+    const ex = r.excludedMatches.find(m => m.sourceDocumentId === id);
+    if (!sourceRows.some(s => s.id === id)) sourceRows.push({id, title: ex ? ex.sourceTitle : id, rank: null, pct: null});
+  });
+  if (sourceRows.length) {
+    out.append(el('h2', '', 'Sources'));
+    const list = el('ol', 'sources');
+    sourceRows.forEach(s => {
+      const off = excludedSources.has(s.id);
+      const li = el('li', off ? 'off' : '', `${s.title}${s.pct !== null ? ' · ' + s.pct + '%' : ''}`);
+      const toggle = el('button', 'quiet', off ? 'Include' : 'Exclude');
+      toggle.onclick = () => { off ? excludedSources.delete(s.id) : excludedSources.add(s.id); runCheck(docId); };
+      li.append(toggle);
+      list.append(li);
+    });
+    out.append(list);
+  }
+
+  const viewer = highlighted(text, r.matches, f.replacedCharacterOffsets);
   out.append(viewer);
   out.append(el('h2', '', `Matches (${r.matches.length})`));
   if (!r.matches.length) out.append(el('p', 'muted', 'No matches above the current settings.'));
@@ -224,6 +340,21 @@ $('new-collection').onsubmit = async e => {
     })).json();
     e.target.reset();
     await loadCollections(created.id);
+  } catch (err) {
+    $('upload-error').textContent = err.message;
+  }
+};
+
+$('template').onsubmit = async e => {
+  e.preventDefault();
+  $('upload-error').textContent = '';
+  if (!$('collection').value) { $('upload-error').textContent = 'Create a collection first.'; return; }
+  const form = new FormData();
+  form.append('file', $('template-file').files[0]);
+  try {
+    await api(`/api/collections/${$('collection').value}/template`, {method: 'PUT', body: form});
+    e.target.reset();
+    await loadTemplate();
   } catch (err) {
     $('upload-error').textContent = err.message;
   }

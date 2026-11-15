@@ -105,14 +105,16 @@ public class Store {
     // ---------------------------------------------------------------- documents
 
     /** Writes a document and its index data atomically, so a document is never half-indexed. */
-    public void insertDocument(DocumentRow doc, String fullText, String actor, List<Fingerprint> fingerprints,
-                               byte[] sketch, String embeddingModel, List<ChunkEmbedding> chunks) {
+    public void insertDocument(DocumentRow doc, String fullText, String integrityJson, String actor,
+                               List<Fingerprint> fingerprints, byte[] sketch, String embeddingModel,
+                               List<ChunkEmbedding> chunks) {
         tx.executeWithoutResult(status -> {
             jdbc.update("""
                     INSERT INTO documents (id, collection_id, title, original_filename, mime_type, byte_size, sha256,
-                        owner_ref, consent_to_index, index_policy, retention_until, full_text, word_count, created_by)
+                        owner_ref, consent_to_index, index_policy, retention_until, full_text, word_count, created_by,
+                        integrity)
                     VALUES (:id, :collection, :title, :filename, :mime, :size, :sha256, :owner, :consent, :policy,
-                        :retentionUntil, :text, :words, :actor)
+                        :retentionUntil, :text, :words, :actor, CAST(:integrity AS jsonb))
                     """, new MapSqlParameterSource()
                     .addValue("id", doc.id()).addValue("collection", doc.collectionId())
                     .addValue("title", doc.title()).addValue("filename", doc.originalFilename())
@@ -120,7 +122,8 @@ public class Store {
                     .addValue("sha256", doc.sha256()).addValue("owner", doc.ownerRef())
                     .addValue("consent", doc.consentToIndex()).addValue("policy", doc.indexPolicy().name())
                     .addValue("retentionUntil", timestamp(doc.retentionUntil()), java.sql.Types.TIMESTAMP)
-                    .addValue("text", fullText).addValue("words", doc.wordCount()).addValue("actor", actor));
+                    .addValue("text", fullText).addValue("words", doc.wordCount()).addValue("actor", actor)
+                    .addValue("integrity", integrityJson));
             if (doc.indexPolicy() == IndexPolicy.NEVER_INDEX) {
                 return;
             }
@@ -162,6 +165,12 @@ public class Store {
                 .stream().findFirst();
     }
 
+    /** The integrity flags stored at upload, or empty for documents uploaded before they were recorded. */
+    public Optional<String> findIntegrity(UUID documentId) {
+        return jdbc.queryForList("SELECT integrity::text FROM documents WHERE id = :id", Map.of("id", documentId),
+                String.class).stream().filter(java.util.Objects::nonNull).findFirst();
+    }
+
     public Map<UUID, String> findTexts(Collection<UUID> documentIds) {
         if (documentIds.isEmpty()) {
             return Map.of();
@@ -184,6 +193,39 @@ public class Store {
                     titles.put(rs.getObject("id", UUID.class), rs.getString("title"));
                 });
         return titles;
+    }
+
+    // ---------------------------------------------------------------- assignment templates
+
+    public record TemplateRow(UUID collectionId, String title, int wordCount, Instant createdAt) {
+    }
+
+    /** Replaces the collection's template. */
+    public void saveTemplate(UUID collectionId, String title, String fullText, int wordCount, String actor) {
+        jdbc.update("""
+                INSERT INTO collection_templates (collection_id, title, full_text, word_count, created_by)
+                VALUES (:id, :title, :text, :words, :actor)
+                ON CONFLICT (collection_id) DO UPDATE SET title = EXCLUDED.title, full_text = EXCLUDED.full_text,
+                    word_count = EXCLUDED.word_count, created_at = now(), created_by = EXCLUDED.created_by
+                """, new MapSqlParameterSource().addValue("id", collectionId).addValue("title", title)
+                .addValue("text", fullText).addValue("words", wordCount).addValue("actor", actor));
+    }
+
+    public Optional<TemplateRow> findTemplate(UUID collectionId) {
+        return jdbc.query("SELECT collection_id, title, word_count, created_at FROM collection_templates"
+                        + " WHERE collection_id = :id", Map.of("id", collectionId),
+                (rs, row) -> new TemplateRow(rs.getObject("collection_id", UUID.class), rs.getString("title"),
+                        rs.getInt("word_count"), instant(rs, "created_at"))).stream().findFirst();
+    }
+
+    public Optional<String> findTemplateText(UUID collectionId) {
+        return jdbc.queryForList("SELECT full_text FROM collection_templates WHERE collection_id = :id",
+                Map.of("id", collectionId), String.class).stream().findFirst();
+    }
+
+    public boolean deleteTemplate(UUID collectionId) {
+        return jdbc.update("DELETE FROM collection_templates WHERE collection_id = :id",
+                Map.of("id", collectionId)) > 0;
     }
 
     // ---------------------------------------------------------------- candidate retrieval

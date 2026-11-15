@@ -24,6 +24,7 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Upload pipeline: extract text, fingerprint, embed, then store everything in one transaction. */
 @Service
@@ -32,11 +33,17 @@ public class IngestService {
     private final TextExtractor extractor;
     private final Store store;
     private final Optional<Embedder> embedder;
+    private final JsonMapper json;
 
-    public IngestService(TextExtractor extractor, Store store, Optional<Embedder> embedder) {
+    public IngestService(TextExtractor extractor, Store store, Optional<Embedder> embedder, JsonMapper json) {
         this.extractor = extractor;
         this.store = store;
         this.embedder = embedder;
+        this.json = json;
+    }
+
+    /** Flags that need the original file, recorded at upload because the file is not kept. */
+    public record Integrity(HiddenTextDetector.HiddenText hiddenText) {
     }
 
     public record Upload(byte[] bytes, String filename, String title, String ownerRef, boolean consentToIndex,
@@ -68,7 +75,8 @@ public class IngestService {
                 extracted.mimeType(), upload.bytes().length, sha256(upload.bytes()), upload.ownerRef(),
                 upload.consentToIndex(), policy, retentionUntil, tokens.size(), Instant.now());
 
-        store.insertDocument(doc, text, actor, Fingerprinter.winnow(shingles),
+        Integrity integrity = new Integrity(HiddenTextDetector.detect(upload.bytes(), extracted.mimeType()));
+        store.insertDocument(doc, text, json.writeValueAsString(integrity), actor, Fingerprinter.winnow(shingles),
                 MinHash.toBytes(MinHash.sketch(shingles)), embedder.map(Embedder::modelId).orElse(null), chunks);
         store.audit(actor, "DOCUMENT_UPLOADED", "document", doc.id());
         return store.findDocument(doc.id()).orElseThrow();

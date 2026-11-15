@@ -1,0 +1,11 @@
+Four Ways of Reusing a Source
+
+Synthetic sample: each paragraph reuses one sentence of the source paper in a different way, one for each of the four match groups.
+
+The first thing to understand is the setting. University hostels in southern Nigeria often depend on a small number of boreholes whose pumps run on an unreliable electricity supply. That is why outages matter so much.
+
+Seasonal limits are clear in the literature. Rainwater harvesting cannot replace boreholes during the dry season, but it can shift non-potable demand away from them for roughly seven months of the year (Okafor, 2021). This still leaves the dry months uncovered.
+
+Treatment is a separate question. As one survey put it, "first-flush diverters removed most of the sediment from each downpour, and the harvested water proved acceptable for flushing toilets, washing clothes and cleaning floors." I agree with that assessment.
+
+Roof condition is the main risk. Adeyemi and Bello (2019) note that "the roofing sheets on older blocks are badly corroded, which raises the iron content of collected water and makes it unsuitable for drinking without treatment." Replacing roofs is therefore part of any plan.

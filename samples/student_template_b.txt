@@ -1,0 +1,9 @@
+CVE 401 Coursework 2: Water Supply in Student Hostels
+
+Question 1. Describe the main sources of water supply for university hostels in your state and explain how reliable each one is during the dry season.
+
+In Ogun State most private hostels sink a single shallow well, while university halls share deeper boreholes. Shallow wells often fail completely by February, whereas the deeper boreholes keep working but deliver less.
+
+Question 2. Propose one low cost change that a hostel administrator could make within a single academic session, and explain how its effect would be measured.
+
+A rota for opening and closing the main valve would stop tanks overflowing at night. Success would show up as fewer complaints logged at the porter's desk and a lower monthly diesel bill for the pump generator.

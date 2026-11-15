@@ -5,6 +5,8 @@ import io.opensimilarity.check.Report.Span;
 import io.opensimilarity.embedding.Chunker;
 import io.opensimilarity.embedding.Chunker.Chunk;
 import io.opensimilarity.embedding.Embedder;
+import io.opensimilarity.filter.Citations;
+import io.opensimilarity.filter.Citations.MatchGroup;
 import io.opensimilarity.filter.ExclusionFilters;
 import io.opensimilarity.filter.ExclusionFilters.Region;
 import io.opensimilarity.fingerprint.Aligner;
@@ -13,6 +15,8 @@ import io.opensimilarity.fingerprint.Fingerprinter.Fingerprint;
 import io.opensimilarity.fingerprint.MinHash;
 import io.opensimilarity.fingerprint.Tokenizer;
 import io.opensimilarity.fingerprint.Tokenizer.Tokens;
+import io.opensimilarity.ingest.HiddenTextDetector.HiddenText;
+import io.opensimilarity.ingest.IngestService;
 import io.opensimilarity.store.Store;
 import io.opensimilarity.store.Store.CollectionRow;
 import io.opensimilarity.store.Store.DocumentRow;
@@ -20,15 +24,19 @@ import io.opensimilarity.store.Store.NearestChunk;
 import io.opensimilarity.store.Store.QueryScope;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.IntConsumer;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -51,6 +59,7 @@ public class CheckService {
     static final double MINHASH_THRESHOLD = 0.02;
     static final int MAX_ALIGNED_DOCUMENTS = 50;
     static final int MAX_EXCLUDED_IN_REPORT = 100;
+    static final int MAX_FLAG_OFFSETS = 200;
     /** A match is attributed to a filter when at least this share of its words falls inside the filtered region. */
     static final double FILTER_MAJORITY = 0.5;
     static final int NEIGHBOURS_PER_CHUNK = 5;
@@ -75,12 +84,17 @@ public class CheckService {
     }
 
     /** All fields optional; null means the default. */
-    public record CheckRequest(Integer minMatchWords, Boolean excludeBibliography, Boolean excludeQuotes,
-                               Boolean useEmbeddings, Double minCosine) {
+    public record CheckRequest(Integer minMatchWords, Double minSourcePercent, Boolean excludeBibliography,
+                               Boolean excludeQuotes, Boolean excludeCited, Boolean excludeTemplate,
+                               List<UUID> excludeSourceIds, Boolean useEmbeddings, Double minCosine) {
     }
 
     /** The result of running a check: its id and stored JSON. */
     public record Stored(UUID checkId, String reportJson) {
+    }
+
+    /** A reported exact match and the alignment it came from, kept until source-level filters have run. */
+    private record Pending(Match match, Aligner.Match aligned) {
     }
 
     public Stored run(DocumentRow doc, CollectionRow collection, CheckRequest request, String actor) {
@@ -89,16 +103,14 @@ public class CheckService {
         Tokens tokens = Tokenizer.tokenize(text);
         QueryScope scope = new QueryScope(doc.id(), doc.collectionId(), collection.department());
 
-        Masks masks = Masks.of(text, tokens, params);
+        Masks masks = Masks.of(text, tokens, params, store.findTemplateText(collection.id()));
+        List<Region> citations = Citations.find(text);
         Candidates candidates = findCandidates(scope, tokens, params);
         Map<UUID, String> sourceTexts = store.findTexts(candidates.ids());
-        Map<UUID, String> titles = store.findTitles(candidates.ids());
+        Map<UUID, String> titles = new HashMap<>(store.findTitles(candidates.ids()));
 
-        BitSet covered = new BitSet(tokens.size());
-        List<Match> matches = new ArrayList<>();
+        List<Pending> included = new ArrayList<>();
         List<Match> excluded = new ArrayList<>();
-        Map<UUID, BitSet> coveredBySource = new HashMap<>();
-
         for (UUID sourceId : candidates.ids()) {
             String sourceText = sourceTexts.get(sourceId);
             Tokens sourceTokens = Tokenizer.tokenize(sourceText);
@@ -106,56 +118,118 @@ public class CheckService {
                     ? ExclusionFilters.mask(sourceTokens, ExclusionFilters.bibliography(sourceText).stream().toList())
                     : new boolean[sourceTokens.size()];
             for (Aligner.Match aligned : Aligner.align(tokens.words(), sourceTokens.words())) {
+                Span query = span(text, tokens, aligned.queryStart(), aligned.queryEnd());
+                Optional<Region> citation = Citations.attributing(text, citations, query.charStart(), query.charEnd());
+                boolean quoted = share(masks.quotes(), aligned.queryStart(), aligned.queryEnd()) >= FILTER_MAJORITY;
                 int counted = masks.countUnmasked(aligned);
-                String reason = exclusionReason(aligned, masks, sourceBibliography, counted, params);
-                int reportedWords = reason == null ? counted : exactWords(aligned);
-                Match match = new Match("FINGERPRINT", sourceId, titles.get(sourceId), reportedWords, 1.0,
-                        span(text, tokens, aligned.queryStart(), aligned.queryEnd()),
+                String reason = exclusionReason(sourceId, aligned, masks, sourceBibliography, quoted,
+                        citation.isPresent(), counted, params);
+                Match match = new Match("FINGERPRINT", MatchGroup.of(citation.isPresent(), quoted).name(),
+                        citation.map(c -> text.substring(c.start(), c.end())).orElse(null), sourceId,
+                        titles.get(sourceId), null, reason == null ? counted : exactWords(aligned), 1.0, query,
                         span(sourceText, sourceTokens, aligned.sourceStart(), aligned.sourceEnd()), reason);
-                if (reason != null) {
+                if (reason == null) {
+                    included.add(new Pending(match, aligned));
+                } else {
                     excluded.add(match);
-                    continue;
-                }
-                matches.add(match);
-                BitSet sourceCoverage = coveredBySource.computeIfAbsent(sourceId, id -> new BitSet(tokens.size()));
-                for (Aligner.Run run : aligned.runs()) {
-                    for (int t = run.queryStart(); t < run.queryEnd(); t++) {
-                        if (!masks.any(t)) {
-                            covered.set(t);
-                            sourceCoverage.set(t);
-                        }
-                    }
                 }
             }
         }
 
+        int considered = masks.consideredWords();
+        included = dropSmallSources(included, excluded, masks, considered, params);
+
+        BitSet covered = new BitSet(tokens.size());
+        Map<UUID, BitSet> coveredBySource = new HashMap<>();
+        Map<MatchGroup, BitSet> coveredByGroup = new EnumMap<>(MatchGroup.class);
+        Map<MatchGroup, Integer> matchesByGroup = new EnumMap<>(MatchGroup.class);
+        List<Match> matches = new ArrayList<>();
+        for (Pending pending : included) {
+            Match match = pending.match();
+            matches.add(match);
+            MatchGroup group = MatchGroup.valueOf(match.matchGroup());
+            matchesByGroup.merge(group, 1, Integer::sum);
+            BitSet sourceCoverage = coveredBySource.computeIfAbsent(match.sourceDocumentId(),
+                    id -> new BitSet(tokens.size()));
+            BitSet groupCoverage = coveredByGroup.computeIfAbsent(group, g -> new BitSet(tokens.size()));
+            forEachCountedWord(pending.aligned(), masks, t -> {
+                covered.set(t);
+                sourceCoverage.set(t);
+                groupCoverage.set(t);
+            });
+        }
+
         BitSet paraphrased = new BitSet(tokens.size());
-        Report.Embedding embeddingStatus = addEmbeddingMatches(scope, text, tokens, masks, covered, params, matches,
-                paraphrased);
+        Report.Embedding embeddingStatus = addEmbeddingMatches(scope, text, tokens, masks, covered, citations, params,
+                matches, excluded, paraphrased);
 
         Report report = buildReport(doc, params, tokens, masks, candidates, covered, paraphrased, coveredBySource,
-                titles, matches, excluded, embeddingStatus);
+                coveredByGroup, matchesByGroup, citations.size(), titles, matches, excluded, embeddingStatus);
         String reportJson = json.writeValueAsString(report);
         store.saveCheck(report.checkId(), doc.id(), report.summary().overlapPercent(), reportJson, actor);
         store.audit(actor, "CHECK_RUN", "check", report.checkId());
         return new Stored(report.checkId(), store.findReport(report.checkId()).orElseThrow());
     }
 
+    /**
+     * Turnitin's "exclude small matches" can be set as a percentage: a source whose matches together are below it is
+     * left out. Its matches move to the excluded list with reason SMALL_SOURCE, so the reviewer can still see them.
+     */
+    private static List<Pending> dropSmallSources(List<Pending> included, List<Match> excluded, Masks masks,
+                                                  int considered, Report.Parameters params) {
+        if (params.minSourcePercent() <= 0) {
+            return included;
+        }
+        Map<UUID, BitSet> words = new HashMap<>();
+        for (Pending pending : included) {
+            BitSet bits = words.computeIfAbsent(pending.match().sourceDocumentId(), id -> new BitSet());
+            forEachCountedWord(pending.aligned(), masks, bits::set);
+        }
+        List<Pending> kept = new ArrayList<>();
+        for (Pending pending : included) {
+            int sourceWords = words.get(pending.match().sourceDocumentId()).cardinality();
+            if (percent(sourceWords, considered) < params.minSourcePercent()) {
+                excluded.add(pending.match().withExclusion("SMALL_SOURCE", exactWords(pending.aligned())));
+            } else {
+                kept.add(pending);
+            }
+        }
+        return kept;
+    }
+
+    private static void forEachCountedWord(Aligner.Match aligned, Masks masks, IntConsumer action) {
+        for (Aligner.Run run : aligned.runs()) {
+            for (int t = run.queryStart(); t < run.queryEnd(); t++) {
+                if (!masks.any(t)) {
+                    action.accept(t);
+                }
+            }
+        }
+    }
+
     private Report.Parameters resolve(CheckRequest request) {
-        CheckRequest r = request != null ? request : new CheckRequest(null, null, null, null, null);
+        CheckRequest r = request != null ? request
+                : new CheckRequest(null, null, null, null, null, null, null, null, null);
         int minMatchWords = r.minMatchWords() != null ? r.minMatchWords() : DEFAULT_MIN_MATCH_WORDS;
         if (minMatchWords < Fingerprinter.K) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "minMatchWords must be at least " + Fingerprinter.K);
+        }
+        double minSourcePercent = r.minSourcePercent() != null ? r.minSourcePercent() : 0.0;
+        if (minSourcePercent < 0 || minSourcePercent >= 100) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "minSourcePercent must be in [0, 100)");
         }
         double minCosine = r.minCosine() != null ? r.minCosine() : DEFAULT_MIN_COSINE;
         if (minCosine <= 0 || minCosine > 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "minCosine must be in (0, 1]");
         }
         return new Report.Parameters(Fingerprinter.K, Fingerprinter.WINDOW, Fingerprinter.GUARANTEED_RUN_WORDS,
-                Aligner.MERGE_GAP_WORDS, minMatchWords,
+                Aligner.MERGE_GAP_WORDS, minMatchWords, minSourcePercent,
                 r.excludeBibliography() == null || r.excludeBibliography(),
                 r.excludeQuotes() == null || r.excludeQuotes(),
+                r.excludeCited() != null && r.excludeCited(),
+                r.excludeTemplate() == null || r.excludeTemplate(),
+                r.excludeSourceIds() == null ? List.of() : List.copyOf(r.excludeSourceIds()),
                 r.useEmbeddings() == null || r.useEmbeddings(),
                 minCosine);
     }
@@ -196,35 +270,63 @@ public class CheckService {
 
     // ---------------------------------------------------------------- filters
 
-    /** Per-word flags for the query document's filtered text. */
-    private record Masks(boolean[] bibliography, boolean[] quotes, Report.Filters filters) {
+    /**
+     * Per-word flags for the query document. The raw masks are always computed, because match groups need the quotes
+     * even when quoted text is not excluded; {@link #any} applies only the exclusions the reviewer asked for.
+     */
+    private record Masks(boolean[] bibliography, boolean[] quotes, boolean[] template, boolean excludeBibliography,
+                         boolean excludeQuotes, boolean excludeTemplate, Optional<Region> bibliographyRegion,
+                         int quotedRegions, boolean templatePresent) {
 
-        static Masks of(String text, Tokens tokens, Report.Parameters params) {
+        static Masks of(String text, Tokens tokens, Report.Parameters params, Optional<String> templateText) {
             Optional<Region> bibliography = ExclusionFilters.bibliography(text);
             List<Region> quotes = ExclusionFilters.quotes(text);
-            return new Masks(
-                    params.excludeBibliography()
-                            ? ExclusionFilters.mask(tokens, bibliography.stream().toList())
-                            : new boolean[tokens.size()],
-                    params.excludeQuotes() ? ExclusionFilters.mask(tokens, quotes) : new boolean[tokens.size()],
-                    new Report.Filters(bibliography.isPresent(), bibliography.map(Region::start).orElse(null),
-                            quotes.size()));
+            boolean[] template = new boolean[tokens.size()];
+            templateText.ifPresent(t -> {
+                // A whole aligned match counts, including the few changed words a merged match may contain, so a
+                // template line the student edited slightly is still recognised.
+                for (Aligner.Match m : Aligner.align(tokens.words(), Tokenizer.tokenize(t).words())) {
+                    for (int w = m.queryStart(); w < m.queryEnd(); w++) {
+                        template[w] = true;
+                    }
+                }
+            });
+            return new Masks(ExclusionFilters.mask(tokens, bibliography.stream().toList()),
+                    ExclusionFilters.mask(tokens, quotes), template,
+                    params.excludeBibliography(), params.excludeQuotes(), params.excludeTemplate(),
+                    bibliography, quotes.size(), templateText.isPresent());
+        }
+
+        boolean excludedBibliography(int word) {
+            return excludeBibliography && bibliography[word];
+        }
+
+        boolean excludedQuote(int word) {
+            return excludeQuotes && quotes[word];
+        }
+
+        boolean excludedTemplate(int word) {
+            return excludeTemplate && template[word];
         }
 
         boolean any(int word) {
-            return bibliography[word] || quotes[word];
+            return excludedBibliography(word) || excludedQuote(word) || excludedTemplate(word);
+        }
+
+        int consideredWords() {
+            int considered = 0;
+            for (int t = 0; t < quotes.length; t++) {
+                if (!any(t)) {
+                    considered++;
+                }
+            }
+            return considered;
         }
 
         int countUnmasked(Aligner.Match match) {
-            int count = 0;
-            for (Aligner.Run run : match.runs()) {
-                for (int t = run.queryStart(); t < run.queryEnd(); t++) {
-                    if (!any(t)) {
-                        count++;
-                    }
-                }
-            }
-            return count;
+            int[] count = {0};
+            forEachCountedWord(match, this, t -> count[0]++);
+            return count[0];
         }
     }
 
@@ -242,16 +344,29 @@ public class CheckService {
         return match.runs().stream().mapToInt(run -> run.queryEnd() - run.queryStart()).sum();
     }
 
-    private static String exclusionReason(Aligner.Match aligned, Masks masks, boolean[] sourceBibliography,
+    /** The first applicable reason, in a fixed order, or null if the match is reported. */
+    private static String exclusionReason(UUID sourceId, Aligner.Match aligned, Masks masks,
+                                          boolean[] sourceBibliography, boolean quoted, boolean cited,
                                           int countedWords, Report.Parameters params) {
-        if (share(masks.bibliography(), aligned.queryStart(), aligned.queryEnd()) >= FILTER_MAJORITY) {
+        if (params.excludeSourceIds().contains(sourceId)) {
+            return "SOURCE_EXCLUDED";
+        }
+        if (masks.excludeBibliography()
+                && share(masks.bibliography(), aligned.queryStart(), aligned.queryEnd()) >= FILTER_MAJORITY) {
             return "BIBLIOGRAPHY";
         }
         if (share(sourceBibliography, aligned.sourceStart(), aligned.sourceEnd()) >= FILTER_MAJORITY) {
             return "SOURCE_BIBLIOGRAPHY";
         }
-        if (share(masks.quotes(), aligned.queryStart(), aligned.queryEnd()) >= FILTER_MAJORITY) {
+        if (masks.excludeTemplate()
+                && share(masks.template(), aligned.queryStart(), aligned.queryEnd()) >= FILTER_MAJORITY) {
+            return "TEMPLATE";
+        }
+        if (masks.excludeQuotes() && quoted) {
             return "QUOTED";
+        }
+        if (params.excludeCited() && cited) {
+            return "CITED";
         }
         return countedWords < params.minMatchWords() ? "SHORT_MATCH" : null;
     }
@@ -259,8 +374,8 @@ public class CheckService {
     // ---------------------------------------------------------------- embeddings
 
     private Report.Embedding addEmbeddingMatches(QueryScope scope, String text, Tokens tokens, Masks masks,
-                                                 BitSet covered, Report.Parameters params, List<Match> matches,
-                                                 BitSet paraphrased) {
+                                                 BitSet covered, List<Region> citations, Report.Parameters params,
+                                                 List<Match> matches, List<Match> excluded, BitSet paraphrased) {
         if (!params.useEmbeddings()) {
             return new Report.Embedding("NOT_REQUESTED", null);
         }
@@ -305,18 +420,28 @@ public class CheckService {
                 if (counted < params.minMatchWords()) {
                     continue;
                 }
-                paraphrased.set(wordStart, wordEnd);
                 int sourceCharStart = group.stream().mapToInt(h -> h.source().charStart()).min().orElseThrow();
                 int sourceCharEnd = group.stream().mapToInt(h -> h.source().charEnd()).max().orElseThrow();
                 int sourceWordStart = group.stream().mapToInt(h -> h.source().wordStart()).min().orElseThrow();
                 int sourceWordEnd = group.stream().mapToInt(h -> h.source().wordEnd()).max().orElseThrow();
                 double confidence = group.stream().mapToDouble(h -> h.source().cosine()).max().orElseThrow();
-                matches.add(new Match("EMBEDDING", sourceId, titles.get(sourceId), counted,
-                        Math.round(confidence * 1000) / 1000.0,
-                        span(text, tokens, wordStart, wordEnd),
+                Span query = span(text, tokens, wordStart, wordEnd);
+                Optional<Region> citation = Citations.attributing(text, citations, query.charStart(), query.charEnd());
+                boolean quoted = share(masks.quotes(), wordStart, wordEnd) >= FILTER_MAJORITY;
+                String reason = params.excludeSourceIds().contains(sourceId) ? "SOURCE_EXCLUDED"
+                        : params.excludeCited() && citation.isPresent() ? "CITED" : null;
+                Match match = new Match("EMBEDDING", MatchGroup.of(citation.isPresent(), quoted).name(),
+                        citation.map(c -> text.substring(c.start(), c.end())).orElse(null), sourceId,
+                        titles.get(sourceId), null, counted, Math.round(confidence * 1000) / 1000.0, query,
                         new Span(sourceCharStart, sourceCharEnd, sourceWordStart, sourceWordEnd,
                                 sourceTexts.get(sourceId).substring(sourceCharStart, sourceCharEnd)),
-                        null));
+                        reason);
+                if (reason != null) {
+                    excluded.add(match);
+                    continue;
+                }
+                paraphrased.set(wordStart, wordEnd);
+                matches.add(match);
             }
         });
         // Words filtered or matched exactly do not count as paraphrase leads, even inside a merged span.
@@ -368,41 +493,80 @@ public class CheckService {
 
     private Report buildReport(DocumentRow doc, Report.Parameters params, Tokens tokens, Masks masks,
                                Candidates candidates, BitSet covered, BitSet paraphrased,
-                               Map<UUID, BitSet> coveredBySource, Map<UUID, String> titles, List<Match> matches,
-                               List<Match> excluded, Report.Embedding embeddingStatus) {
+                               Map<UUID, BitSet> coveredBySource, Map<MatchGroup, BitSet> coveredByGroup,
+                               Map<MatchGroup, Integer> matchesByGroup, int citationsDetected,
+                               Map<UUID, String> titles, List<Match> matches, List<Match> excluded,
+                               Report.Embedding embeddingStatus) {
         int bibliographyWords = 0;
         int quotedOnlyWords = 0;
+        int templateOnlyWords = 0;
         for (int t = 0; t < tokens.size(); t++) {
-            if (masks.bibliography()[t]) {
+            if (masks.excludedBibliography(t)) {
                 bibliographyWords++;
-            } else if (masks.quotes()[t]) {
+            } else if (masks.excludedQuote(t)) {
                 quotedOnlyWords++;
+            } else if (masks.excludedTemplate(t)) {
+                templateOnlyWords++;
             }
         }
-        int considered = tokens.size() - bibliographyWords - quotedOnlyWords;
+        int considered = tokens.size() - bibliographyWords - quotedOnlyWords - templateOnlyWords;
 
-        List<Report.Source> sources = coveredBySource.entrySet().stream()
-                .map(e -> new Report.Source(e.getKey(), titles.get(e.getKey()), e.getValue().cardinality(),
-                        percent(e.getValue().cardinality(), considered),
-                        candidates.jaccard().getOrDefault(e.getKey(), 0.0),
-                        candidates.shared().getOrDefault(e.getKey(), 0)))
-                .sorted(Comparator.comparingInt(s -> -s.matchedWords()))
+        List<Map.Entry<UUID, BitSet>> bySize = coveredBySource.entrySet().stream()
+                .sorted(Comparator.<Map.Entry<UUID, BitSet>>comparingInt(e -> -e.getValue().cardinality())
+                        .thenComparing(e -> e.getKey().toString()))
                 .toList();
+        Map<UUID, Integer> ranks = new HashMap<>();
+        List<Report.Source> sources = new ArrayList<>();
+        for (Map.Entry<UUID, BitSet> e : bySize) {
+            int rank = sources.size() + 1;
+            ranks.put(e.getKey(), rank);
+            sources.add(new Report.Source(rank, e.getKey(), titles.get(e.getKey()), e.getValue().cardinality(),
+                    percent(e.getValue().cardinality(), considered),
+                    candidates.jaccard().getOrDefault(e.getKey(), 0.0),
+                    candidates.shared().getOrDefault(e.getKey(), 0)));
+        }
 
-        List<Match> ordered = matches.stream().sorted(Comparator.comparingInt(m -> m.query().charStart())).toList();
+        Map<String, Report.Group> groups = new LinkedHashMap<>();
+        for (MatchGroup group : MatchGroup.values()) {
+            int words = coveredByGroup.getOrDefault(group, new BitSet()).cardinality();
+            groups.put(group.name(), new Report.Group(matchesByGroup.getOrDefault(group, 0), words,
+                    percent(words, considered)));
+        }
+
+        List<Match> ordered = matches.stream()
+                .map(m -> m.withRank(ranks.get(m.sourceDocumentId())))
+                .sorted(Comparator.comparingInt(m -> m.query().charStart()))
+                .toList();
         List<Match> excludedSample = excluded.stream()
                 .sorted(Comparator.comparingInt(m -> -m.matchedWords()))
                 .limit(MAX_EXCLUDED_IN_REPORT)
                 .toList();
 
-        Report.Summary summary = new Report.Summary(tokens.size(), bibliographyWords, quotedOnlyWords, considered,
-                covered.cardinality(), percent(covered.cardinality(), considered),
+        Report.Summary summary = new Report.Summary(tokens.size(), bibliographyWords, quotedOnlyWords,
+                templateOnlyWords, considered, covered.cardinality(), percent(covered.cardinality(), considered),
+                percent(covered.cardinality(), tokens.size()),
                 paraphrased.cardinality(), percent(paraphrased.cardinality(), considered),
                 ordered.size(), sources.size());
         Report.Corpus corpus = new Report.Corpus(candidates.eligible(), candidates.shared().size(),
                 candidates.passingMinHash(), candidates.ids().size(), candidates.droppedByCap());
+        Report.Filters filters = new Report.Filters(masks.bibliographyRegion().isPresent(),
+                masks.bibliographyRegion().map(Region::start).orElse(null), masks.quotedRegions(),
+                citationsDetected, masks.templatePresent());
         return new Report(UUID.randomUUID(), doc.id(), doc.title(), Instant.now(), Report.NOTICE, params, summary,
-                corpus, masks.filters(), embeddingStatus, sources, ordered, excluded.size(), excludedSample);
+                groups, flags(doc, tokens), corpus, filters, embeddingStatus, sources, ordered, excluded.size(),
+                excludedSample);
+    }
+
+    private Report.Flags flags(DocumentRow doc, Tokens tokens) {
+        HiddenText hidden = store.findIntegrity(doc.id())
+                .map(j -> json.readValue(j, IngestService.Integrity.class).hiddenText())
+                .orElse(new HiddenText("NOT_RECORDED", 0, ""));
+        return new Report.Flags(tokens.replaced().length, sample(tokens.replaced()), tokens.invisible().length,
+                sample(tokens.invisible()), hidden.status(), hidden.words(), hidden.sample());
+    }
+
+    private static List<Integer> sample(int[] offsets) {
+        return Arrays.stream(offsets).limit(MAX_FLAG_OFFSETS).boxed().toList();
     }
 
     private static double percent(int part, int whole) {

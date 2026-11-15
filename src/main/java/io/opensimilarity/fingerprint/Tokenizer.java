@@ -12,22 +12,34 @@ import java.util.Locale;
  * <p>Words are compared after NFKC normalization and lower-casing. Invisible format characters
  * (soft hyphens, zero-width spaces) are ignored, and a word broken by a hyphen at the end of a line,
  * which is common in text extracted from justified PDFs, is rejoined.
+ *
+ * <p>Letters from another alphabet that imitate Latin letters (Cyrillic "а" for Latin "a") are folded to the Latin
+ * letter when the word is otherwise Latin, or when the document is mostly Latin and every letter of the word is either
+ * Latin or such a look-alike. A genuine Greek or Russian word keeps its letters, because it contains letters with no
+ * Latin twin. The offsets of folded characters are reported so a reviewer can see them.
  */
 public final class Tokenizer {
 
     private Tokenizer() {
     }
 
-    /** Parallel arrays: word i is {@code words[i]}, found at {@code [starts[i], ends[i])}. */
-    public record Tokens(String[] words, int[] starts, int[] ends) {
+    /**
+     * Parallel arrays: word i is {@code words[i]}, found at {@code [starts[i], ends[i])}. {@code replaced} holds the
+     * character offsets of look-alike letters that were folded to Latin; {@code invisible} those of ignored invisible
+     * characters inside words.
+     */
+    public record Tokens(String[] words, int[] starts, int[] ends, int[] replaced, int[] invisible) {
         public int size() {
             return words.length;
         }
     }
 
     public static Tokens tokenize(String text) {
+        boolean mostlyLatin = mostlyLatin(text);
         List<String> words = new ArrayList<>();
         List<int[]> spans = new ArrayList<>();
+        List<Integer> replaced = new ArrayList<>();
+        List<Integer> invisible = new ArrayList<>();
         int n = text.length();
         int i = 0;
         while (i < n) {
@@ -39,6 +51,9 @@ public final class Tokenizer {
             int start = i;
             int end = i;
             StringBuilder word = new StringBuilder();
+            List<Integer> lookAlikes = new ArrayList<>();
+            boolean hasLatin = false;
+            boolean otherScript = false;
             while (i < n) {
                 int resume = afterLineEndHyphen(text, i);
                 if (resume > 0 && word.length() > 0) {
@@ -50,6 +65,15 @@ public final class Tokenizer {
                 if (isWordChar(cp)) {
                     if (Character.getType(cp) != Character.FORMAT) {
                         word.appendCodePoint(cp);
+                        if (Confusables.isConfusable(cp)) {
+                            lookAlikes.add(i);
+                        } else if (Confusables.isLatinLetter(cp)) {
+                            hasLatin = true;
+                        } else if (Character.isLetter(cp)) {
+                            otherScript = true;
+                        }
+                    } else if (word.length() > 0) {
+                        invisible.add(i);
                     }
                     i += len;
                     end = i;
@@ -61,7 +85,14 @@ public final class Tokenizer {
                     break;
                 }
             }
-            String normalized = Normalizer.normalize(word, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
+            CharSequence chars = word;
+            if (!lookAlikes.isEmpty() && !otherScript && (hasLatin || mostlyLatin)) {
+                StringBuilder folded = new StringBuilder(word.length());
+                word.codePoints().map(Confusables::fold).forEach(folded::appendCodePoint);
+                chars = folded;
+                replaced.addAll(lookAlikes);
+            }
+            String normalized = Normalizer.normalize(chars, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
             if (!normalized.isEmpty()) {
                 words.add(normalized);
                 spans.add(new int[] {start, end});
@@ -73,7 +104,26 @@ public final class Tokenizer {
             starts[t] = spans.get(t)[0];
             ends[t] = spans.get(t)[1];
         }
-        return new Tokens(words.toArray(String[]::new), starts, ends);
+        return new Tokens(words.toArray(String[]::new), starts, ends,
+                replaced.stream().mapToInt(Integer::intValue).toArray(),
+                invisible.stream().mapToInt(Integer::intValue).toArray());
+    }
+
+    /** True when more than half of the letters are Latin, counting look-alikes as foreign. */
+    private static boolean mostlyLatin(String text) {
+        int latin = 0;
+        int letters = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            if (Character.isLetter(cp)) {
+                letters++;
+                if (Confusables.isLatinLetter(cp)) {
+                    latin++;
+                }
+            }
+            i += Character.charCount(cp);
+        }
+        return latin * 2 > letters;
     }
 
     private static boolean isWordChar(int cp) {

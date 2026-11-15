@@ -1,0 +1,7 @@
+Keeping Hostel Taps Running
+
+Synthetic sample: the second paragraph copies the source paper but replaces a Latin letter in every third word with a look-alike Cyrillic letter. It reads the same on screen.
+
+A hostel block hоusing four hundred studеnts consumed about thirtу thousand litres оn a typical wеekday during the survеy period, with thе sharpest peak bеtween six and еight in the mоrning. Because this рeak coincides with thе hours when grid power is lеast dependable, storage сapacity matters more thаn pumping capacity, аnd modest overhead tаnks filled during thе night were аble to carry аn entire block thrоugh the morning withоut any generator running at all.
+
+My recommendation is to fill the tanks overnight and to publish a filling timetable, so residents can plan around the morning rush instead of queueing at empty taps.

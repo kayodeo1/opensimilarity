@@ -1,0 +1,9 @@
+CVE 401 Coursework 2: Water Supply in Student Hostels
+
+Question 1. Describe the main sources of water supply for university hostels in your state and explain how reliable each one is during the dry season.
+
+Our campus relies on three boreholes and a municipal connection that has not delivered water since 2019. In the harmattan the borehole yields drop noticeably and the pumps trip whenever the voltage sags.
+
+Question 2. Propose one low cost change that a hostel administrator could make within a single academic session, and explain how its effect would be measured.
+
+I would install a float valve alarm on each overhead tank. Its effect can be measured by counting the hours each week in which a block reports no water, before and after installation.

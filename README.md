@@ -101,20 +101,33 @@ Send an optional `X-Actor` header to label audit rows. It is self-declared, not 
 | `GET /api/health` | Status, database, pgvector version, embedding model |
 | `POST /api/collections` | Create. JSON: `name`, `department`, `indexPolicy`, `retentionDays` |
 | `GET /api/collections`, `GET /api/collections/{id}` | Read collections |
+| `PUT /api/collections/{id}/template` | Set the assignment template. Multipart: `file`, `title` |
+| `GET`, `DELETE /api/collections/{id}/template` | Read or remove the template |
 | `POST /api/collections/{id}/documents` | Upload PDF, DOCX or TXT. Multipart: `file`, `title`, `ownerRef`, `consentToIndex`, `indexPolicy` |
 | `GET /api/collections/{id}/documents` | List documents |
 | `GET /api/documents/{id}`, `GET /api/documents/{id}/text` | Metadata, extracted text |
-| `POST /api/documents/{id}/checks` | Run a check. Optional JSON: `minMatchWords`, `excludeBibliography`, `excludeQuotes`, `useEmbeddings`, `minCosine` |
+| `POST /api/documents/{id}/checks` | Run a check. Optional JSON: `minMatchWords`, `minSourcePercent`, `excludeBibliography`, `excludeQuotes`, `excludeCited`, `excludeTemplate`, `excludeSourceIds`, `useEmbeddings`, `minCosine` |
 | `GET /api/checks/{id}` | Fetch a stored report |
 
 ### Reading a report
 
 - `summary.overlapPercent` is `matchedWords / consideredWords`. Only words exactly shared with a source count, and
   `consideredWords` is the total minus words removed by the filters.
+- `summary.overlapPercentOfAllWords` divides the same matched words by every word in the document, which is how
+  Turnitin's guides describe its score.
 - `summary.paraphraseLeadPercent` is separate because it rests on a model's judgement rather than on exact overlap.
+- `matchGroups` splits exact matches into Turnitin's four groups: `NOT_CITED_OR_QUOTED`, `MISSING_QUOTATIONS` (cited but
+  not quoted), `MISSING_CITATION` (quoted but not cited) and `CITED_AND_QUOTED`. Each match has a `matchGroup` and,
+  if one was found, the `citation` text taken to attribute it.
+- `flags` lists integrity flags: `replacedCharacters` (look-alike letters from another alphabet, with offsets),
+  `invisibleCharacters` (zero-width characters inside words) and hidden text (`hiddenTextWords`, `hiddenTextSample`).
+  A flag is a reason to look, not proof of intent. `hiddenTextStatus` is `NOT_RECORDED` for documents uploaded before
+  the check existed.
+- `sources` are ranked, 1 being the source with most matched words, and each match carries its `sourceRank`.
 - Every match has a `method` (`FINGERPRINT` or `EMBEDDING`), a source document, and `query` and `source` spans.
   Character offsets are UTF-16 code units into the extracted text, and ranges are half-open.
-- `excludedMatches` lists what the filters removed and why, so a filter never hides a match silently. The list is
+- `excludedMatches` lists what the filters removed and why (`SOURCE_EXCLUDED`, `BIBLIOGRAPHY`, `SOURCE_BIBLIOGRAPHY`,
+  `TEMPLATE`, `QUOTED`, `CITED`, `SHORT_MATCH`, `SMALL_SOURCE`), so a filter never hides a match silently. The list is
   capped at 100 entries; `excludedMatchesTotal` has the full count.
 - `corpus` shows how the search narrowed. `eligibleDocuments: 0` means there was nothing to compare against, which is
   different from a document having no overlap.
@@ -123,7 +136,8 @@ Send an optional `X-Actor` header to label audit rows. It is self-declared, not 
 
 1. **Extract.** Apache Tika turns the upload into plain text. Only the text is stored, not the file.
 2. **Tokenize.** Words are NFKC-normalized and lower-cased, keeping their original offsets. Invisible characters are
-   ignored and hyphenated line breaks are rejoined.
+   ignored and hyphenated line breaks are rejoined. Cyrillic, Greek and Armenian letters that imitate Latin letters
+   are folded back to Latin inside otherwise-Latin words (or in a mostly Latin document), and reported as flags.
 3. **Fingerprint.** Every 5-word shingle is hashed and winnowed with a window of 4, and the selected hashes become
    postings. Any shared run of at least 8 words is guaranteed to share a fingerprint.
 4. **Find candidates.** A document is aligned if it shares enough fingerprints *or* its MinHash estimate marks it as a
@@ -132,11 +146,22 @@ Send an optional `X-Actor` header to label audit rows. It is self-declared, not 
    pure resemblance filter would lose the case that matters most.
 5. **Align.** Every shingle of the candidate is compared to recover exact word-level spans. Runs separated by up to 4
    changed words merge into one match, but only the exact words count.
-6. **Filter.** The heuristics remove the reference list (a heading such as "References" in the last 70% of the text),
-   text in double quotation marks (up to 1,500 characters) and matches under 12 words.
+6. **Filter and group.** The heuristics remove the reference list (a heading such as "References" in the last 70% of
+   the text), text in double quotation marks (up to 1,500 characters), text aligned with the assignment template, and
+   matches under 12 words. Each match is put in a match group from the quotation marks and the nearest in-text
+   citation in the same paragraph.
 7. **Paraphrase assist.** Passages not already explained by exact matches are embedded with all-MiniLM-L6-v2 (384
    dimensions, running locally with the model bundled in the jar) and searched through a `halfvec` HNSW index. Matches
    at cosine 0.72 or above are reported as `EMBEDDING` leads for review.
+
+## Turnitin-style features
+
+The report reproduces the Similarity Report behaviour that Turnitin's public guides describe: match groups, the
+replaced-characters and hidden-text flags, assignment template exclusion, excluding individual sources, and excluding
+small sources by percentage. [`research/turnitin-behaviour-notes.md`](research/turnitin-behaviour-notes.md) lists each
+one with its public source and says what was inferred. No Turnitin software, account or private API was used, and its
+matching algorithm is not public, so results will not be identical. The largest difference is the corpus: OpenSimilarity
+only compares documents uploaded to it.
 
 ## Privacy defaults
 
@@ -169,6 +194,16 @@ Please read these before relying on results.
   but paraphrase assist has not been evaluated on African languages.
 - **Filters are simple heuristics.** A reference list with no heading is not detected, and quote detection covers
   double quotation marks only. Filtered matches stay listed in the report so a reviewer can check them.
+- **Citation detection covers common forms only:** author-year (`(Okafor, 2019)`, `Okafor (2019)`) and bracketed
+  numbers (`[12]`). Footnotes, superscripts and MLA author-page citations without a year are missed, which puts those
+  matches in the wrong group. Anything in parentheses with a capitalised word and a year counts as a citation.
+- **Hidden text checks direct formatting only.** In DOCX, colour applied through a style is not resolved. In PDF, white
+  text on a dark shape is flagged as hidden although a reader can see it.
+- **Paraphrase leads can fire on same-topic writing.** The demo's original same-topic essay scored cosine 0.75 against
+  another student's answer on the same assignment, above the 0.72 default. Treat leads between students on one
+  assignment with care.
+- **Look-alike folding changed fingerprints.** Documents indexed before it that contain look-alike letters keep their
+  old postings until re-uploaded. Documents in plain Latin script are unaffected.
 - **Scanned PDFs are rejected,** because there is no OCR.
 - **Processing is synchronous.** On a test machine, a 5,000-word check took under a second and a 57,000-word check
   about 6 seconds, each against one document of similar size. Larger corpora have not been measured.

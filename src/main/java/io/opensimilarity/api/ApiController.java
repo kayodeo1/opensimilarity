@@ -2,11 +2,15 @@ package io.opensimilarity.api;
 
 import io.opensimilarity.check.CheckService;
 import io.opensimilarity.check.CheckService.CheckRequest;
+import io.opensimilarity.fingerprint.Fingerprinter;
+import io.opensimilarity.fingerprint.Tokenizer;
 import io.opensimilarity.ingest.IngestService;
+import io.opensimilarity.ingest.TextExtractor;
 import io.opensimilarity.store.IndexPolicy;
 import io.opensimilarity.store.Store;
 import io.opensimilarity.store.Store.CollectionRow;
 import io.opensimilarity.store.Store.DocumentRow;
+import io.opensimilarity.store.Store.TemplateRow;
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
@@ -14,9 +18,11 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,11 +43,13 @@ public class ApiController {
     private final Store store;
     private final IngestService ingest;
     private final CheckService checks;
+    private final TextExtractor extractor;
 
-    public ApiController(Store store, IngestService ingest, CheckService checks) {
+    public ApiController(Store store, IngestService ingest, CheckService checks, TextExtractor extractor) {
         this.store = store;
         this.ingest = ingest;
         this.checks = checks;
+        this.extractor = extractor;
     }
 
     public record CreateCollection(String name, String department, IndexPolicy indexPolicy, Integer retentionDays) {
@@ -97,6 +105,49 @@ public class ApiController {
         DocumentRow created = ingest.ingest(collection, new IngestService.Upload(file.getBytes(),
                 file.getOriginalFilename(), title, ownerRef, consentToIndex, indexPolicy), actor);
         return ResponseEntity.created(URI.create("/api/documents/" + created.id())).body(created);
+    }
+
+    /**
+     * Sets the collection's assignment template: instructions, a cover sheet or question prompts that every student
+     * is expected to reuse. Matches on it are excluded. Unlike Turnitin, it can be set or changed after submissions,
+     * because it is applied when a check runs.
+     */
+    @PutMapping(path = "/collections/{id}/template", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public TemplateRow putTemplate(
+            @PathVariable UUID id,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(required = false) String title,
+            @RequestHeader(name = ACTOR_HEADER, defaultValue = "anonymous") String actor) throws IOException {
+        requireCollection(id);
+        String text = extractor.extract(file.getBytes(), file.getOriginalFilename()).text();
+        int words = Tokenizer.tokenize(text).size();
+        if (words < Fingerprinter.K) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "A template needs at least " + Fingerprinter.K + " words of text");
+        }
+        String name = title != null && !title.isBlank() ? title
+                : file.getOriginalFilename() != null ? file.getOriginalFilename() : "Template";
+        store.saveTemplate(id, name, text, words, actor);
+        store.audit(actor, "TEMPLATE_SET", "collection", id);
+        return store.findTemplate(id).orElseThrow();
+    }
+
+    @GetMapping("/collections/{id}/template")
+    public TemplateRow getTemplate(@PathVariable UUID id) {
+        requireCollection(id);
+        return store.findTemplate(id).orElseThrow(() -> notFound("template for collection", id));
+    }
+
+    @DeleteMapping("/collections/{id}/template")
+    public ResponseEntity<Void> deleteTemplate(
+            @PathVariable UUID id,
+            @RequestHeader(name = ACTOR_HEADER, defaultValue = "anonymous") String actor) {
+        requireCollection(id);
+        if (!store.deleteTemplate(id)) {
+            throw notFound("template for collection", id);
+        }
+        store.audit(actor, "TEMPLATE_DELETED", "collection", id);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/documents/{id}")

@@ -51,6 +51,11 @@ BIBLIOGRAPHY=$(upload student_bibliography_only.txt)
 QUOTED=$(upload student_quoted.txt)
 SAME_TOPIC=$(upload control_same_topic.txt)
 UNRELATED=$(upload control_unrelated.txt)
+HOMOGLYPH=$(upload student_homoglyph.txt false)
+HIDDEN=$(upload student_hidden_text.docx false)
+GROUPED=$(upload student_match_groups.txt false)
+TEMPLATE_A=$(upload student_template_a.txt)
+TEMPLATE_B=$(upload student_template_b.txt)
 
 PLANTED='A hostel block housing four hundred students'
 PLANTED_END='without any generator running at all'
@@ -122,7 +127,12 @@ expect "visible if the reviewer lowers minCosine to 0.6" \
 echo "== 5. Controls: no false alarms"
 report=$(check "$SAME_TOPIC")
 summarize "$report"
-expect "same topic, original writing: no matches" '(.matches | length) == 0' "$report"
+expect "same topic, original writing: no exact matches" '[.matches[] | select(.method == "FINGERPRINT")] | length == 0' "$report"
+expect "same topic, original writing: nothing from the source paper" \
+    "[.matches[] | select(.sourceDocumentId == \"$SOURCE\")] | length == 0" "$report"
+# Known false alarm, reported rather than asserted: another student's answer on the same topic can pass the
+# default paraphrase threshold. See README, Limitations.
+jq -r '.matches[] | select(.method == "EMBEDDING") | "  NOTE  paraphrase lead on original writing: \(.sourceTitle), cosine \(.confidence)"' <<<"$report"
 report=$(check "$UNRELATED")
 expect "unrelated topic: no matches" '(.matches | length) == 0' "$report"
 
@@ -143,6 +153,69 @@ COPY=$(curl -fsS -X POST "$BASE/api/collections/$OTHER/documents" -F "file=@$SAM
 report=$(check "$COPY")
 expect "COURSE_ONLY documents are not visible from another collection" \
     '.corpus.eligibleDocuments == 0 and (.matches | length) == 0' "$report"
+
+echo "== 8. Replaced characters: Cyrillic look-alikes do not hide a copied paragraph"
+report=$(check "$HOMOGLYPH")
+summarize "$report"
+expect "the disguised paragraph still matches the source paper" \
+    "[.matches[] | select(.method == \"FINGERPRINT\" and .sourceDocumentId == \"$SOURCE\" and .matchedWords > 50)] | length == 1" "$report"
+expect "the replaced characters are flagged with their offsets" \
+    '.flags.replacedCharacters >= 15 and (.flags.replacedCharacterOffsets | length) == .flags.replacedCharacters' "$report"
+report=$(check "$VERBATIM")
+expect "an ordinary essay has no replaced-character flag" '.flags.replacedCharacters == 0' "$report"
+
+echo "== 9. Hidden text: white text in a DOCX is flagged"
+report=$(check "$HIDDEN")
+jq -c '.flags | {hiddenTextStatus, hiddenTextWords}' <<<"$report"
+expect "hidden text found and counted" '.flags.hiddenTextStatus == "CHECKED" and .flags.hiddenTextWords >= 100' "$report"
+report=$(check "$VERBATIM_DOCX")
+expect "a normal DOCX has none" '.flags.hiddenTextStatus == "CHECKED" and .flags.hiddenTextWords == 0' "$report"
+
+echo "== 10. Match groups: one paragraph for each group"
+report=$(check "$GROUPED" '{"excludeQuotes":false}')
+jq -c '[.matches[] | {matchGroup, citation, matchedWords}]' <<<"$report"
+jq -c '.matchGroups' <<<"$report"
+for group in NOT_CITED_OR_QUOTED MISSING_QUOTATIONS MISSING_CITATION CITED_AND_QUOTED; do
+    expect "$group has one match from the source" \
+        "[.matches[] | select(.sourceDocumentId == \"$SOURCE\" and .matchGroup == \"$group\")] | length == 1" "$report"
+done
+expect "group words add up to the matched words" \
+    '([.matchGroups[].words] | add) == .summary.matchedWords' "$report"
+report=$(check "$GROUPED")
+expect "default settings exclude the two quoted matches as QUOTED" \
+    '[.excludedMatches[] | select(.excludedBecause == "QUOTED")] | length == 2' "$report"
+report=$(check "$GROUPED" '{"excludeCited":true}')
+expect "excludeCited removes the cited match with its reason" \
+    '[.excludedMatches[] | select(.method == "FINGERPRINT" and .excludedBecause == "CITED" and .matchGroup == "MISSING_QUOTATIONS")] | length == 1' "$report"
+
+echo "== 11. Assignment template: shared question text is excluded"
+report=$(check "$TEMPLATE_B")
+expect "without a template the two students match on the question text" \
+    "[.matches[] | select(.sourceDocumentId == \"$TEMPLATE_A\")] | length >= 1" "$report"
+curl -fsS -X PUT "$BASE/api/collections/$COLLECTION/template" -H 'X-Actor: demo' \
+    -F "file=@$SAMPLES/assignment_template.txt" | jq -c .
+report=$(check "$TEMPLATE_B")
+jq -c '{summary: .summary | {totalWords, excludedTemplateWords, matchedWords}, excluded: [.excludedMatches[] | {excludedBecause, matchedWords}]}' <<<"$report"
+expect "with the template, nothing is reported against the other student" \
+    "[.matches[] | select(.sourceDocumentId == \"$TEMPLATE_A\")] | length == 0" "$report"
+expect "the template matches are listed as excluded TEMPLATE" \
+    '([.excludedMatches[] | select(.excludedBecause == "TEMPLATE")] | length >= 1) and .summary.excludedTemplateWords > 40' "$report"
+report=$(check "$TEMPLATE_B" '{"excludeTemplate":false}')
+expect "excludeTemplate=false restores them" \
+    "[.matches[] | select(.sourceDocumentId == \"$TEMPLATE_A\")] | length >= 1" "$report"
+
+echo "== 12. Excluding a source and small sources recalculates the report"
+report=$(check "$VERBATIM" "{\"excludeSourceIds\":[\"$SOURCE\"]}")
+expect "the excluded source has no reported matches" \
+    "[.matches[] | select(.sourceDocumentId == \"$SOURCE\")] | length == 0" "$report"
+expect "its match is listed as SOURCE_EXCLUDED" \
+    "[.excludedMatches[] | select(.method == \"FINGERPRINT\" and .sourceDocumentId == \"$SOURCE\" and .excludedBecause == \"SOURCE_EXCLUDED\")] | length == 1" "$report"
+report=$(check "$VERBATIM" '{"minSourcePercent":99}')
+expect "minSourcePercent drops every source below it as SMALL_SOURCE" \
+    '(.matches | map(select(.method == "FINGERPRINT")) | length) == 0 and ([.excludedMatches[] | select(.excludedBecause == "SMALL_SOURCE")] | length) >= 1' "$report"
+report=$(check "$VERBATIM")
+expect "sources are ranked and matches carry their source's rank" \
+    '(.sources | length) as $n | ((.sources | map(.rank)) == [range(1; $n + 1)]) and ([.matches[] | select(.method == "FINGERPRINT") | .sourceRank != null] | all)' "$report"
 
 echo
 if [ "$failures" -eq 0 ]; then
